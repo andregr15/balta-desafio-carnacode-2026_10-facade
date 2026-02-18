@@ -2,15 +2,102 @@
 // PROBLEMA: O processo de finalização de pedido envolve múltiplos subsistemas (estoque, pagamento, 
 // envio, notificação, cupons) cada um com interfaces complexas. O cliente precisa conhecer e 
 // orquestrar todos esses sistemas, resultando em código complexo e acoplado
-
-using System;
-using System.Collections.Generic;
-
 namespace DesignPatternChallenge
 {
     // Contexto: E-commerce onde finalizar um pedido requer interagir com vários subsistemas
     // Cada subsistema tem sua própria API complexa com múltiplos passos
-    
+
+    public class CheckoutFacade(
+        InventorySystem inventory,
+        PaymentGateway payment,
+        ShippingService shipping,
+        CouponSystem coupon,
+        NotificationService notification
+    )
+    {
+        private readonly InventorySystem _inventory = inventory;
+        private readonly PaymentGateway _payment = payment;
+        private readonly ShippingService _shipping = shipping;
+        private readonly CouponSystem _coupon = coupon;
+        private readonly NotificationService _notification = notification;
+
+
+        public void Process(OrderDTO order)
+        {
+            try
+            {
+                // Problema: Cliente precisa conhecer ordem correta de execução
+                // e gerenciar estado de cada subsistema
+
+                // Passo 1: Verificar estoque
+                if (!_inventory.CheckAvailability(order.ProductId))
+                {
+                    Console.WriteLine("❌ Produto indisponível");
+                    return;
+                }
+
+                // Passo 2: Reservar produto
+                _inventory.ReserveProduct(order.ProductId, order.Quantity);
+
+                // Passo 3: Validar e aplicar cupom
+                decimal discount = 0;
+                if (!string.IsNullOrEmpty(order.CouponCode))
+                {
+                    if (_coupon.ValidateCoupon(order.CouponCode))
+                    {
+                        discount = _coupon.GetDiscount(order.CouponCode);
+                    }
+                }
+
+                // Passo 4: Calcular valores
+                decimal subtotal = order.ProductPrice * order.Quantity;
+                decimal discountAmount = subtotal * discount;
+                decimal shippingCost = _shipping.CalculateShipping(order.ZipCode, order.Quantity * 0.5m);
+                decimal total = subtotal - discountAmount + shippingCost;
+
+                // Passo 5: Processar pagamento
+                string transactionId = _payment.InitializeTransaction(total);
+
+                if (!_payment.ValidateCard(order.CreditCard, order.Cvv))
+                {
+                    _inventory.ReleaseReservation(order.ProductId, order.Quantity);
+                    Console.WriteLine("❌ Cartão inválido");
+                    return;
+                }
+
+                if (!_payment.ProcessPayment(transactionId, order.CreditCard))
+                {
+                    _inventory.ReleaseReservation(order.ProductId, order.Quantity);
+                    Console.WriteLine("❌ Pagamento recusado");
+                    return;
+                }
+
+                // Passo 6: Criar envio
+                string orderId = $"ORD{DateTime.Now.Ticks}";
+                string labelId = _shipping.CreateShippingLabel(orderId, order.ShippingAddress);
+                _shipping.SchedulePickup(labelId, DateTime.Now.AddDays(1));
+
+                // Passo 7: Marcar cupom como usado
+                if (!string.IsNullOrEmpty(order.CouponCode))
+                {
+                    _coupon.MarkCouponAsUsed(order.CouponCode, order.CustomerEmail);
+                }
+
+                // Passo 8: Enviar notificações
+                _notification.SendOrderConfirmation(order.CustomerEmail, orderId);
+                _notification.SendPaymentReceipt(order.CustomerEmail, transactionId);
+                _notification.SendShippingNotification(order.CustomerEmail, labelId);
+
+                Console.WriteLine($"\n✅ Pedido {orderId} finalizado com sucesso!");
+                Console.WriteLine($"   Total: R$ {total:N2}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erro ao processar pedido: {ex.Message}");
+            }
+        }
+    }
+
     // ========== SUBSISTEMA DE ESTOQUE ==========
     public class InventorySystem
     {
@@ -176,86 +263,16 @@ namespace DesignPatternChallenge
             };
 
             Console.WriteLine("=== Processando Pedido (Código Complexo) ===\n");
+            var checkout = new CheckoutFacade(inventory, payment, shipping, coupon, notification);
+            checkout.Process(order);
 
-            try
-            {
-                // Problema: Cliente precisa conhecer ordem correta de execução
-                // e gerenciar estado de cada subsistema
-                
-                // Passo 1: Verificar estoque
-                if (!inventory.CheckAvailability(order.ProductId))
-                {
-                    Console.WriteLine("❌ Produto indisponível");
-                    return;
-                }
-
-                // Passo 2: Reservar produto
-                inventory.ReserveProduct(order.ProductId, order.Quantity);
-
-                // Passo 3: Validar e aplicar cupom
-                decimal discount = 0;
-                if (!string.IsNullOrEmpty(order.CouponCode))
-                {
-                    if (coupon.ValidateCoupon(order.CouponCode))
-                    {
-                        discount = coupon.GetDiscount(order.CouponCode);
-                    }
-                }
-
-                // Passo 4: Calcular valores
-                decimal subtotal = order.ProductPrice * order.Quantity;
-                decimal discountAmount = subtotal * discount;
-                decimal shippingCost = shipping.CalculateShipping(order.ZipCode, order.Quantity * 0.5m);
-                decimal total = subtotal - discountAmount + shippingCost;
-
-                // Passo 5: Processar pagamento
-                string transactionId = payment.InitializeTransaction(total);
-                
-                if (!payment.ValidateCard(order.CreditCard, order.Cvv))
-                {
-                    inventory.ReleaseReservation(order.ProductId, order.Quantity);
-                    Console.WriteLine("❌ Cartão inválido");
-                    return;
-                }
-
-                if (!payment.ProcessPayment(transactionId, order.CreditCard))
-                {
-                    inventory.ReleaseReservation(order.ProductId, order.Quantity);
-                    Console.WriteLine("❌ Pagamento recusado");
-                    return;
-                }
-
-                // Passo 6: Criar envio
-                string orderId = $"ORD{DateTime.Now.Ticks}";
-                string labelId = shipping.CreateShippingLabel(orderId, order.ShippingAddress);
-                shipping.SchedulePickup(labelId, DateTime.Now.AddDays(1));
-
-                // Passo 7: Marcar cupom como usado
-                if (!string.IsNullOrEmpty(order.CouponCode))
-                {
-                    coupon.MarkCouponAsUsed(order.CouponCode, order.CustomerEmail);
-                }
-
-                // Passo 8: Enviar notificações
-                notification.SendOrderConfirmation(order.CustomerEmail, orderId);
-                notification.SendPaymentReceipt(order.CustomerEmail, transactionId);
-                notification.SendShippingNotification(order.CustomerEmail, labelId);
-
-                Console.WriteLine($"\n✅ Pedido {orderId} finalizado com sucesso!");
-                Console.WriteLine($"   Total: R$ {total:N2}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ Erro ao processar pedido: {ex.Message}");
-            }
-
-            Console.WriteLine("\n=== PROBLEMAS ===");
-            Console.WriteLine("✗ Cliente precisa conhecer 5 subsistemas diferentes");
-            Console.WriteLine("✗ Código complexo com muitos passos interdependentes");
-            Console.WriteLine("✗ Alto acoplamento entre cliente e subsistemas");
-            Console.WriteLine("✗ Lógica de negócio espalhada no código cliente");
-            Console.WriteLine("✗ Difícil garantir consistência e tratamento de erros");
-            Console.WriteLine("✗ Código repetido em diferentes pontos da aplicação");
+            // Console.WriteLine("\n=== PROBLEMAS ===");
+            // Console.WriteLine("✗ Cliente precisa conhecer 5 subsistemas diferentes");
+            // Console.WriteLine("✗ Código complexo com muitos passos interdependentes");
+            // Console.WriteLine("✗ Alto acoplamento entre cliente e subsistemas");
+            // Console.WriteLine("✗ Lógica de negócio espalhada no código cliente");
+            // Console.WriteLine("✗ Difícil garantir consistência e tratamento de erros");
+            // Console.WriteLine("✗ Código repetido em diferentes pontos da aplicação");
 
             // Perguntas para reflexão:
             // - Como simplificar a interface para o cliente?
